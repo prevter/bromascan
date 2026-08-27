@@ -7,4 +7,6 @@ namespace bromascan {
         std::filesystem::path const& path,
         broma::Root const& root
     );
+
+    geode::Result<std::string> formatBromaFile(broma::Root const& root);
 }

@@ -4,6 +4,7 @@
 #include <fstream>
 #include <broma/Writer.hpp>
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 #include <fmt/std.h>
 
 using namespace geode;
@@ -12,11 +13,24 @@ namespace broutil {
     BroUtil::BroUtil(std::filesystem::path inputBro, std::filesystem::path outputBro, bool format)
         : m_inputBro(std::move(inputBro)), m_outputBro(std::move(outputBro)), m_format(format) {}
 
+    BroUtil::BroUtil(std::filesystem::path inputBro, std::filesystem::path outputBro, UninlineTag) {
+        m_inputBro = std::move(inputBro);
+        m_outputBro = std::move(outputBro);
+        m_uninline = true;
+    }
+
     BroUtil::BroUtil(std::filesystem::path inputBro, std::filesystem::path scanResults, std::filesystem::path outputBro)
         : m_inputBro(std::move(inputBro)),
           m_outputBro(std::move(outputBro)),
           m_scanResults(std::move(scanResults)),
           m_useScanResults(true) {}
+
+    BroUtil::BroUtil(std::filesystem::path originalBro, std::filesystem::path extraBro, std::filesystem::path outputBro, MergeTag) {
+        m_inputBro = std::move(originalBro);
+        m_outputBro = std::move(outputBro);
+        m_scanResults = std::move(extraBro);
+        m_merge = true;
+    }
 
     Result<> BroUtil::clearBindings(broma::Root root) const {
         auto clearBindings = [](broma::PlatformNumber& binds) {
@@ -156,12 +170,111 @@ namespace broutil {
         return bromascan::writeBromaFile(m_outputBro, root);
     }
 
+    Result<> BroUtil::mergeBromas(broma::Root root) const {
+        // load extra bro file
+        auto parseRes = broma::parse_file(m_scanResults);
+        if (!parseRes) {
+            return Err(fmt::format("Failed to parse extra Broma file:\n - {}", fmt::join(parseRes.unwrapErr().messages, "\n - ")));
+        }
+
+        broma::Root extraRoot = std::move(parseRes).unwrap();
+
+        auto const mergeBinds = [](broma::PlatformNumber& base, broma::PlatformNumber const& extra) {
+            if (extra.win >= 0 && base.win != -2) base.win = extra.win;
+            if (extra.imac >= 0 && base.imac != -2) base.imac = extra.imac;
+            if (extra.m1 >= 0 && base.m1 != -2) base.m1 = extra.m1;
+            if (extra.ios >= 0 && base.ios != -2) base.ios = extra.ios;
+            if (extra.android32 >= 0 && base.android32 != -2) base.android32 = extra.android32;
+            if (extra.android64 >= 0 && base.android64 != -2) base.android64 = extra.android64;
+        };
+
+        auto const compareFuncs = [](broma::FunctionBindField const& a, broma::FunctionBindField const& b) {
+            if (a.prototype.name != b.prototype.name) {
+                return false;
+            }
+            if (a.prototype.args.size() != b.prototype.args.size()) {
+                return false;
+            }
+            for (size_t i = 0; i < a.prototype.args.size(); ++i) {
+                if (a.prototype.args[i].first.name != b.prototype.args[i].first.name) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        // merge classes
+        for (auto& extraClass : extraRoot.classes) {
+            auto clsIt = std::ranges::find_if(
+                root.classes,
+                [&extraClass](broma::Class const& c) {
+                    return c.name == extraClass.name;
+                }
+            );
+
+            if (clsIt == root.classes.end()) {
+                // class not found, add it
+                // root.classes.push_back(extraClass);
+                continue;
+            }
+
+            // merge fields
+            for (auto& extraField : extraClass.fields) {
+                auto extraFn = extraField.get_as<broma::FunctionBindField>();
+                if (!extraFn) continue;
+
+                // check if field exists
+                auto fieldIt = std::ranges::find_if(
+                    clsIt->fields,
+                    [&](broma::Field const& f) {
+                        if (auto fn = f.get_as<broma::FunctionBindField>()) {
+                            return compareFuncs(*fn, *extraFn);
+                        }
+                        return false;
+                    }
+                );
+
+                if (fieldIt == clsIt->fields.end()) {
+                    // field not found, add it
+                    // clsIt->fields.push_back(extraField);
+                } else {
+                    // field found, merge bindings
+                    auto fn = fieldIt->get_as<broma::FunctionBindField>();
+                    mergeBinds(fn->binds, extraFn->binds);
+                }
+            }
+        }
+
+        return bromascan::writeBromaFile(m_outputBro, root);
+    }
+
     Result<> BroUtil::process() {
-        broma::Root root;
-        try {
-            root = broma::parse_file(m_inputBro);
-        } catch (std::exception const& e) {
-            return Err(fmt::format("Failed to parse Broma file: {}", e.what()));
+        auto parseRes = broma::parse_file(m_inputBro);
+        if (!parseRes) {
+            return Err(fmt::format("Failed to parse Broma file:\n - {}", fmt::join(parseRes.unwrapErr().messages, "\n - ")));
+        }
+
+        broma::Root root = std::move(parseRes).unwrap();
+
+        if (m_uninline) {
+            // remove all inline definitions from the file
+            for (auto& cls : root.classes) {
+                for (auto& field : cls.fields) {
+                    if (auto fn = field.get_as<broma::FunctionBindField>()) {
+                        fn->inner.clear();
+                    }
+                }
+            }
+
+            for (auto& fn : root.functions) {
+                fn.inner.clear();
+            }
+
+            return bromascan::writeBromaFile(m_outputBro, root);
+        }
+
+        if (m_merge) {
+            return mergeBromas(std::move(root));
         }
 
         if (m_format) {
