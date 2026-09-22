@@ -923,52 +923,58 @@ namespace bromascan {
             }
         }
 
-        // for (auto& fn : functions) {
-        //     auto* method = &fn.prototype;
-        //
-        //     // blank line if has docs
-        //     if (!method->attributes.docs.empty()) {
-        //         fmt::println(file, "");
-        //     }
-        //
-        //     // attributes
-        //     auto attrs = formatAttributes(method->attributes, {});
-        //     if (!attrs.empty()) {
-        //         fmt::print(file, "{}", attrs);
-        //     }
-        //
-        //     fmt::print(file, "{} {}(", method->ret.name, method->name);
-        //
-        //     // args
-        //     bool shouldKeepDefaultNames = fn.inner.contains("p0");
-        //     for (size_t i = 0; i < method->args.size(); ++i) {
-        //         auto const& [argType, argName] = method->args[i];
-        //
-        //         // if argName follows `p0`, `p1`, etc., we can omit it
-        //         if (!shouldKeepDefaultNames && argName == fmt::format("p{}", i)) {
-        //             fmt::print(file, "{}", argType.name);
-        //         } else {
-        //             fmt::print(file, "{} {}", argType.name, argName);
-        //         }
-        //
-        //         if (i + 1 < method->args.size()) {
-        //             fmt::print(file, ", ");
-        //         }
-        //     }
-        //
-        //     fmt::print(file, ")");
-        //
-        //     // bindings
-        //     auto bindStr = fmt::to_string(fn.binds);
-        //     fmt::print(file, "{}", bindStr);
-        //     if (!fn.inner.empty()) {
-        //         fmt::print(file, " {}", fn.inner);
-        //     } else {
-        //         fmt::print(file, ";");
-        //     }
-        //
-        //     fmt::print(file, "\n");
-        // }
+        std::ranges::sort(ast.functions, [](auto const& a, auto const& b) {
+            return LexicographicalComparer{}(a.fn.prototype.name, b.fn.prototype.name);
+        });
+
+        for (auto const& fn : ast.functions) {
+            if (!fn.leadingComments.empty()) {
+                buffer.append("{}\n", fmt::join(fn.leadingComments, "\n"));
+            }
+
+            auto const& method = fn.fn.prototype;
+
+            buffer.append("{:I0}", method.attributes);
+
+            buffer.append("{} {}(", method.ret.name, method.name);
+
+            bool shouldKeepDefaultNames = fn.fn.inner.contains("p0");
+            for (size_t i = 0; i < method.args.size(); ++i) {
+                auto const& [argType, argName] = method.args[i];
+
+                if (!shouldKeepDefaultNames && argName == fmt::format("p{}", i)) {
+                    buffer.append("{}", argType.name);
+                } else {
+                    buffer.append("{} {}", argType.name, argName);
+                }
+
+                if (i + 1 < method.args.size()) {
+                    buffer.append(", ");
+                }
+            }
+
+            if (method.is_variadic) {
+                if (!method.args.empty()) {
+                    buffer.append(", ");
+                }
+                buffer.append("...");
+            }
+
+            buffer.append(")");
+
+            buffer.append("{}", fn.fn.binds);
+            if (!fn.fn.inner.empty()) {
+                buffer.append(" {}", fn.fn.inner);
+            } else {
+                buffer.append(";");
+            }
+
+            if (!fn.trailingComments.empty()) {
+                buffer.append(" {}", fmt::join(fn.trailingComments, " "));
+            }
+
+            buffer.append("\n");
+        }
 
         return Ok(buffer.str());
     }
