@@ -15,6 +15,9 @@ namespace utils {
         ThreadPool(size_t threadCount = std::thread::hardware_concurrency());
         ~ThreadPool();
 
+        ThreadPool(ThreadPool const&) = delete;
+        ThreadPool& operator=(ThreadPool const&) = delete;
+
         void enqueue(std::move_only_function<void()> task);
         void waitAll();
 
@@ -26,6 +29,7 @@ namespace utils {
 
         mutable std::mutex m_queueMutex;
         std::condition_variable m_condition;
+        std::condition_variable m_waitCondition;
         std::atomic<bool> m_stop{false};
         std::atomic<size_t> m_activeTasks{0};
 

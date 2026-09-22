@@ -29,15 +29,10 @@ void utils::ThreadPool::enqueue(std::move_only_function<void()> task) {
 }
 
 void utils::ThreadPool::waitAll() {
-    while (true) {
-        {
-            std::unique_lock lock(m_queueMutex);
-            if (m_tasks.empty() && m_activeTasks.load() == 0) {
-                break;
-            }
-        }
-        std::this_thread::yield();
-    }
+    std::unique_lock lock(m_queueMutex);
+    m_waitCondition.wait(lock, [this] {
+        return m_tasks.empty() && m_activeTasks.load(std::memory_order_acquire) == 0;
+    });
 }
 
 bool utils::ThreadPool::isRunning() const {
@@ -54,11 +49,17 @@ void utils::ThreadPool::workerThread() {
             if (m_stop.load() && m_tasks.empty()) {
                 return;
             }
-            task = std::move(m_tasks.back());
-            m_tasks.pop_back();
+            task = std::move(m_tasks.front());
+            m_tasks.erase(m_tasks.begin());
             ++m_activeTasks;
         }
         task();
-        --m_activeTasks;
+        size_t remaining = --m_activeTasks;
+        if (remaining == 0) {
+            std::unique_lock lock(m_queueMutex);
+            if (m_tasks.empty()) {
+                m_waitCondition.notify_all();
+            }
+        }
     }
 }
