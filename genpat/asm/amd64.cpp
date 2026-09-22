@@ -24,11 +24,9 @@ namespace assembly::amd64 {
             auto const& [type, offset, size] = segments.segments[i];
             switch (type) {
                 case ZYDIS_INSTR_SEGMENT_DISPLACEMENT:
+                case ZYDIS_INSTR_SEGMENT_IMMEDIATE:
                     copyBytes(offset, size, true);
                     break;
-                // case ZYDIS_INSTR_SEGMENT_IMMEDIATE:
-                //     copyBytes(offset, size, true);
-                //     break;
                 default:
                     copyBytes(offset, size, false);
                     break;
