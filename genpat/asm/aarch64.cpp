@@ -91,9 +91,9 @@ namespace assembly::aarch64 {
         switch (ins->is_alias ? ins->alias_id : ins->id) {
             case AARCH64_INS_ALIAS_SUB: [[fallthrough]];
             case AARCH64_INS_SUB: {
-                // sub sp, sp, #imm - Keep full opcode (stack size usually stable)
+                // sub sp, sp, #imm - prologue stack frame
                 if (detail.operands[1].reg == AARCH64_REG_SP) {
-                    mask = 0xffffffff;
+                    mask = 0xffc003ff;
                 }
                 // immediate value
                 else if (detail.operands[0].reg == detail.operands[1].reg) {
@@ -112,9 +112,9 @@ namespace assembly::aarch64 {
             }
             case AARCH64_INS_ALIAS_STP: [[fallthrough]];
             case AARCH64_INS_STP: {
-                // stp xN, xN, [sp, #imm] - Keep full opcode (common prologue pattern)
+                // stp xN, xN, [sp, #imm] - common prologue pattern
                 if (detail.operands[2].mem.base == AARCH64_REG_SP) {
-                    mask = 0xffffffff;
+                    mask = 0xffff83e0;
                 } else {
                     // generic stp instruction
                     mask = 0xffff8000;
@@ -123,9 +123,9 @@ namespace assembly::aarch64 {
             }
             case AARCH64_INS_ALIAS_ADD: [[fallthrough]];
             case AARCH64_INS_ADD: {
-                // add xN, sp, #imm - Keep full opcode (stack size usually stable)
+                // add xN, sp, #imm - prologue stack frame
                 if (detail.operands[1].reg == AARCH64_REG_SP) {
-                    mask = 0xffffffff;
+                    mask = 0xffc003ff;
                 }
                 // immediate value
                 else if (detail.operands[0].reg == detail.operands[1].reg) {
@@ -154,11 +154,19 @@ namespace assembly::aarch64 {
                 }
                 break;
             }
-            case AARCH64_INS_B: [[fallthrough]];
-            case AARCH64_INS_BL: {
+            case AARCH64_INS_B: {
                 // -- Branch instructions --
                 // Keep only the opcode (branch target may change)
                 // 0xfc = 11111100
+                if (ins->detail->aarch64.cc == AArch64CC_Invalid) {
+                    mask = 0xfc000000;
+                } else {
+                    // conditional branch
+                    mask = 0xff000010;
+                }
+                break;
+            }
+            case AARCH64_INS_BL: {
                 mask = 0xfc000000;
                 break;
             }
@@ -175,7 +183,7 @@ namespace assembly::aarch64 {
                 // str/ldr xN, [sp, #imm] - Keep full opcode (stack size usually stable)
                 if (detail.operands[1].type == AARCH64_OP_MEM &&
                     detail.operands[1].mem.base == AARCH64_REG_SP) {
-                    mask = 0xffffffff;
+                    mask = 0xffffffe0;
                 } else {
                     // store the opcode
                     mask = ins->id == AARCH64_INS_LDR ? 0xff000000 : 0xffc00000;
@@ -210,23 +218,167 @@ namespace assembly::aarch64 {
                 break;
             }
             case AARCH64_INS_LDP: {
-                mask = 0b11111111'11000000'00000000'00000000;
+                if (detail.operands[2].type == AARCH64_OP_MEM && detail.operands[2].mem.base == AARCH64_REG_SP) {
+                    mask = 0xffff83e0;
+                } else {
+                    mask = 0xffa08000;
+                }
                 break;
             }
             case AARCH64_INS_BLR: {
                 mask = 0b11111111'11111111'11111100'00011111;
                 break;
             }
-            case AARCH64_INS_TBZ: {
-                mask = 0b11111111'11111000'00000000'00011111;
+            case AARCH64_INS_TBZ: [[fallthrough]];
+            case AARCH64_INS_TBNZ: {
+                mask = 0xff000000;
                 break;
             }
             case AARCH64_INS_BR: {
                 mask = 0b11111111'11111111'11111100'00011111;
                 break;
             }
-            case AARCH64_INS_STUR: {
-                mask = 0b11111111'11100000'00001100'00000000;
+            case AARCH64_INS_STUR: [[fallthrough]];
+            case AARCH64_INS_LDUR: {
+                if (detail.operands[1].type == AARCH64_OP_MEM && detail.operands[1].mem.base == AARCH64_REG_SP) {
+                    mask = 0xffffffe0;
+                } else {
+                    mask = 0xffe00c00;
+                }
+                break;
+            }
+            case AARCH64_INS_MOVK: [[fallthrough]];
+            case AARCH64_INS_MOVZ: [[fallthrough]];
+            case AARCH64_INS_MOVN: {
+                mask = 0xff800000;
+                break;
+            }
+            case AARCH64_INS_ALIAS_CMP: {
+                if (detail.operands[1].type == AARCH64_OP_REG) {
+                    mask = 0xffe0fc1f;
+                } else {
+                    mask = 0xffc0001f;
+                }
+                break;
+            }
+            case AARCH64_INS_ALIAS_CSET: [[fallthrough]];
+            case AARCH64_INS_CSINC: {
+                mask = 0xffe0fc00;
+                break;
+            }
+            case AARCH64_INS_CSEL: {
+                mask = 0xffe0fc00;
+                break;
+            }
+            case AARCH64_INS_MSR: {
+                mask = 0xffffffff;
+                break;
+            }
+            case AARCH64_INS_MRS: {
+                mask = 0xffdfffff;
+                break;
+            }
+            case AARCH64_INS_UXTB: [[fallthrough]];
+            case AARCH64_INS_UXTH: [[fallthrough]];
+            case AARCH64_INS_SXTB: [[fallthrough]];
+            case AARCH64_INS_SXTH: {
+                mask = 0xffe0fc00;
+                break;
+            }
+            case AARCH64_INS_LSL: [[fallthrough]];
+            case AARCH64_INS_LSR: [[fallthrough]];
+            case AARCH64_INS_ASR: [[fallthrough]];
+            case AARCH64_INS_ROR: {
+                mask = 0xff200c00;
+                break;
+            }
+            case AARCH64_INS_AND: [[fallthrough]];
+            case AARCH64_INS_ORR: [[fallthrough]];
+            case AARCH64_INS_EOR: [[fallthrough]];
+            case AARCH64_INS_BIC: {
+                if (detail.operands[1].type == AARCH64_OP_REG &&
+                    detail.operands[2].type == AARCH64_OP_IMM) {
+                    mask = 0xff80001f;
+                } else {
+                    mask = 0xff200c00;
+                }
+                break;
+            }
+            case AARCH64_INS_ANDS: [[fallthrough]];
+            case AARCH64_INS_EORS: {
+                mask = 0xff200c00;
+                break;
+            }
+            case AARCH64_INS_MADD: [[fallthrough]];
+            case AARCH64_INS_MSUB: {
+                mask = 0xff00fc00;
+                break;
+            }
+            case AARCH64_INS_SDIV: [[fallthrough]];
+            case AARCH64_INS_UDIV: {
+                mask = 0xffe0fc1f;
+                break;
+            }
+            case AARCH64_INS_CLZ: [[fallthrough]];
+            case AARCH64_INS_RBIT: [[fallthrough]];
+            case AARCH64_INS_REV: [[fallthrough]];
+            case AARCH64_INS_REV16: [[fallthrough]];
+            case AARCH64_INS_REV32: {
+                mask = 0xfffffc00;
+                break;
+            }
+            case AARCH64_INS_CCMN: [[fallthrough]];
+            case AARCH64_INS_CCMP: {
+                mask = 0xe0700000;
+                break;
+            }
+            case AARCH64_INS_STRH: [[fallthrough]];
+            case AARCH64_INS_LDRH: {
+                if (detail.operands[1].type == AARCH64_OP_MEM &&
+                    detail.operands[1].mem.base == AARCH64_REG_SP) {
+                    mask = 0xFFFFFFE0;
+                } else {
+                    mask = 0xffc00000;
+                }
+                break;
+            }
+            case AARCH64_INS_STURB: [[fallthrough]];
+            case AARCH64_INS_STURH: [[fallthrough]];
+            case AARCH64_INS_LDURB: [[fallthrough]];
+            case AARCH64_INS_LDURH: [[fallthrough]];
+            case AARCH64_INS_LDURSW: [[fallthrough]];
+            case AARCH64_INS_LDURSB: [[fallthrough]];
+            case AARCH64_INS_LDURSH: {
+                if (detail.operands[1].type == AARCH64_OP_MEM &&
+                    detail.operands[1].mem.base == AARCH64_REG_SP) {
+                    mask = 0xFFFFFFE0;
+                } else {
+                    mask = 0xffe00c00;
+                }
+                break;
+            }
+            case AARCH64_INS_ALIAS_NOP: {
+                mask = 0xffffffff;
+                break;
+            }
+            case AARCH64_INS_ALIAS_TST: {
+                mask = 0xffe0fc1f;
+                break;
+            }
+            case AARCH64_INS_ERET: {
+                mask = 0xffffffff;
+                break;
+            }
+            case AARCH64_INS_SVC: {
+                mask = 0xffffffff;
+                break;
+            }
+            case AARCH64_INS_HLT: {
+                mask = 0xffffffff;
+                break;
+            }
+            case AARCH64_INS_ADR: {
+                mask = 0x9f000000;
                 break;
             }
             default: {
