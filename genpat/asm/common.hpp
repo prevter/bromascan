@@ -1,10 +1,15 @@
 #pragma once
+#include <climits>
+#include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
 #include <sinaps.hpp>
 #include <fmt/format.h>
 #include <Geode/Result.hpp>
+#include <broma/FunctionList.hpp>
 
 #if defined(__x86_64__) || defined(__i386__)
 #include <emmintrin.h>
@@ -139,6 +144,143 @@ namespace assembly {
         }
     }
 
+    inline std::optional<size_t> findFirstMatch(
+        uint8_t const* data,
+        size_t size,
+        sinaps::token_t const* pattern,
+        size_t pattern_size,
+        size_t step_size
+    ) {
+        if (size < pattern_size) return std::nullopt;
+
+        if (pattern_size == 4 && step_size == 4) {
+            uint32_t patVal = 0, patMask = 0;
+            for (int i = 0; i < 4; ++i) {
+                if (pattern[i].type != sinaps::token_t::type_t::wildcard) {
+                    patVal |= static_cast<uint32_t>(pattern[i].byte) << (i * 8);
+                    patMask |= static_cast<uint32_t>(pattern[i].mask) << (i * 8);
+                }
+            }
+
+            size_t limit = size - 4;
+            size_t i = 0;
+
+        #if defined(__x86_64__) || defined(__i386__)
+            if (patMask != 0) {
+                __m128i maskV = _mm_set1_epi32(static_cast<int>(patMask));
+                __m128i patV = _mm_set1_epi32(static_cast<int>(patVal));
+                while (i + 16 <= limit + 1) {
+                    __m128i v = _mm_loadu_si128(reinterpret_cast<__m128i const*>(data + i));
+                    __m128i masked = _mm_and_si128(v, maskV);
+                    __m128i cmp = _mm_cmpeq_epi32(masked, patV);
+                    unsigned int mask = _mm_movemask_ps(_mm_castsi128_ps(cmp));
+                    if (mask) {
+                        if (mask & 1) return i;
+                        if (mask & 2) return i + 4;
+                        if (mask & 4) return i + 8;
+                        if (mask & 8) return i + 12;
+                    }
+                    i += 16;
+                }
+            }
+        #endif
+
+            while (i <= limit) {
+                uint32_t v;
+                std::memcpy(&v, data + i, 4);
+                if ((v & patMask) == patVal) {
+                    return i;
+                }
+                i += 4;
+            }
+            return std::nullopt;
+        }
+
+        size_t limit = size - pattern_size;
+        for (size_t i = 0; i <= limit; i += step_size) {
+            bool found = true;
+            for (size_t j = 0; j < pattern_size; ++j) {
+                switch (pattern[j].type) {
+                    case sinaps::token_t::type_t::byte:
+                        if (data[i + j] != pattern[j].byte) { found = false; }
+                        break;
+                    case sinaps::token_t::type_t::masked:
+                        if ((data[i + j] & pattern[j].mask) != pattern[j].byte) { found = false; }
+                        break;
+                    default:
+                        break;
+                }
+                if (!found) break;
+            }
+            if (found) {
+                return i;
+            }
+        }
+        return std::nullopt;
+    }
+
+    inline std::optional<size_t> fuzzyMatchAtFunctionStarts(
+        uint8_t const* data,
+        size_t size,
+        sinaps::token_t const* pattern,
+        size_t pattern_size,
+        bromascan::FunctionList const* functionList,
+        uintptr_t baseCorrection,
+        size_t maxMismatches,
+        size_t requiredMargin,
+        size_t* bestMismatchesOut = nullptr
+    ) {
+        if (!functionList || functionList->empty() || pattern_size == 0) {
+            return std::nullopt;
+        }
+
+        size_t bestMismatches = SIZE_MAX;
+        size_t secondBest = SIZE_MAX;
+        size_t bestOffset = SIZE_MAX;
+        bool any = false;
+
+        for (auto const& entry : functionList->entries()) {
+            uintptr_t rva = entry.address;
+            if (rva < baseCorrection) continue;
+            size_t offset = static_cast<size_t>(rva - baseCorrection);
+            if (offset + pattern_size > size) continue;
+
+            size_t mismatches = 0;
+            for (size_t j = 0; j < pattern_size; ++j) {
+                switch (pattern[j].type) {
+                    case sinaps::token_t::type_t::byte:
+                        if (data[offset + j] != pattern[j].byte) ++mismatches;
+                        break;
+                    case sinaps::token_t::type_t::masked:
+                        if ((data[offset + j] & pattern[j].mask) != pattern[j].byte) ++mismatches;
+                        break;
+                    default:
+                        break;
+                }
+                if (mismatches > maxMismatches) break;
+            }
+            if (mismatches > maxMismatches) continue;
+
+            any = true;
+            if (mismatches < bestMismatches) {
+                secondBest = bestMismatches;
+                bestMismatches = mismatches;
+                bestOffset = offset;
+            } else if (mismatches < secondBest) {
+                secondBest = mismatches;
+            }
+        }
+
+        if (!any) return std::nullopt;
+        if (bestMismatches > maxMismatches) return std::nullopt;
+        if (secondBest != SIZE_MAX && (secondBest - bestMismatches) < requiredMargin) {
+            return std::nullopt;
+        }
+
+        if (bestMismatchesOut) *bestMismatchesOut = bestMismatches;
+        return bestOffset;
+    }
+
     template <typename T>
     concept GeneratorConcept = requires(T t, std::span<uint8_t const> data) {
         { T(data) } -> std::same_as<T>;
@@ -228,5 +370,21 @@ namespace assembly {
         }
 
         return geode::Err(GenerateError::NotFound);
+    }
+
+    struct GenerateOptions {
+        size_t maxSize = 256;
+        bromascan::FunctionList const* functionList = nullptr;
+        uintptr_t baseCorrection = 0;
+    };
+
+    template <GeneratorConcept Generator>
+    geode::Result<void, GenerateError> generatePattern(
+        std::vector<sinaps::token_t>& outTokens,
+        std::span<uint8_t const> data,
+        uintptr_t offset,
+        GenerateOptions opts
+    ) {
+        return generatePattern<Generator>(outTokens, data, offset, opts.maxSize);
     }
 }

@@ -72,6 +72,7 @@ target_compile_definitions(genpat PRIVATE GENPAT_VERSION="${PROJECT_VERSION}")
 
 file(GLOB_RECURSE SCANPAT_SOURCE_FILES CONFIGURE_DEPENDS scanpat/*.cpp)
 add_executable(scanpat ${SCANPAT_SOURCE_FILES})
+target_include_directories(scanpat PRIVATE genpat)
 target_link_libraries(scanpat PRIVATE ${PROJECT_NAME})
 target_compile_definitions(scanpat PRIVATE SCANPAT_VERSION="${PROJECT_VERSION}")
 

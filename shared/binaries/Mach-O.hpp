@@ -93,5 +93,11 @@ namespace bin::mach {
     bool isFatBinary(std::span<uint8_t const> binaryData);
     bool isMachO64(std::span<uint8_t const> binaryData);
 
+    uintptr_t getImageBase(std::span<uint8_t const> binaryData);
+    std::vector<uintptr_t> getFunctionStarts(
+        std::span<uint8_t const> binaryData,
+        CPUType type
+    );
+
     #undef GEN_GETTER
 }

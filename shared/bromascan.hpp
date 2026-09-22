@@ -1,7 +1,9 @@
 #pragma once
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 #include <broma/Types.hpp>
 #include <nlohmann/json.hpp>
 
@@ -17,6 +19,13 @@ std::string_view format_as(Platform platform);
 struct MethodBinding {
     bromascan::Function method;
     std::optional<std::string> pattern;
+    std::optional<std::string> altPattern;
+    std::optional<uintptr_t> altPatternOffset;
+    std::optional<size_t> vtableSlot;
+    std::optional<std::string> vtableName;
+    std::optional<size_t> vtableSlotCount;
+    std::vector<std::string> callTargets;
+    std::optional<size_t> funcSize;
     std::optional<uintptr_t> offset;
 };
 

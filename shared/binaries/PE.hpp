@@ -60,4 +60,6 @@ namespace bin::pe {
 
     geode::Result<VirtualSection> getSection(std::span<uint8_t const> binaryData);
     bool isPE64(std::span<uint8_t const> binaryData);
+
+    uintptr_t getImageBase(std::span<uint8_t const> binaryData);
 }

@@ -65,4 +65,28 @@ namespace bin::pe {
         uint32_t peSig = *reinterpret_cast<uint32_t const*>(binaryData.data() + dosHeader->e_lfanew);
         return peSig == PE_MAGIC;
     }
+
+    uintptr_t getImageBase(std::span<uint8_t const> binaryData) {
+        if (binaryData.size() < sizeof(DOSHeader)) return 0;
+        auto* dosHeader = reinterpret_cast<DOSHeader const*>(binaryData.data());
+        if (dosHeader->e_magic != MZ_MAGIC) return 0;
+
+        size_t peOffset = dosHeader->e_lfanew;
+        if (peOffset + sizeof(uint32_t) + sizeof(FileHeader) > binaryData.size()) return 0;
+
+        uint32_t peSig = *reinterpret_cast<uint32_t const*>(binaryData.data() + peOffset);
+        if (peSig != PE_MAGIC) return 0;
+
+        size_t optHeaderOffset = peOffset + sizeof(uint32_t) + sizeof(FileHeader);
+        if (optHeaderOffset + 24 + sizeof(uint64_t) > binaryData.size()) return 0;
+
+        uint16_t optMagic = *reinterpret_cast<uint16_t const*>(binaryData.data() + optHeaderOffset);
+        if (optMagic == 0x20B) { // PE32+
+            return *reinterpret_cast<uint64_t const*>(binaryData.data() + optHeaderOffset + 24);
+        }
+        if (optMagic == 0x10B) { // PE32
+            return *reinterpret_cast<uint32_t const*>(binaryData.data() + optHeaderOffset + 28);
+        }
+        return 0;
+    }
 }

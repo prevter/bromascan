@@ -15,6 +15,29 @@
 #include "asm/amd64.hpp"
 
 namespace genpat {
+    static std::string makeQualifiedName(std::string_view cls, std::string_view fn) {
+        return fmt::format("{}::{}", cls, fn);
+    }
+
+    std::unordered_map<uintptr_t, Generator::VtableSlotInfo> Generator::computeVtableSlots(std::vector<bromascan::Class> const& classes) {
+        (void)classes;
+        std::unordered_map<uintptr_t, VtableSlotInfo> out;
+        if (!m_vtableList) return out;
+
+        for (auto const& vt : m_vtableList->entries()) {
+            for (size_t i = 0; i < vt.slots.size(); ++i) {
+                auto slotRva = vt.slots[i];
+                if (slotRva == 0) continue;
+                out.emplace(slotRva, VtableSlotInfo{
+                    vt.className,
+                    i,
+                    vt.slots.size()
+                });
+            }
+        }
+        return out;
+    }
+
     Result<Platform> Generator::resolvePlatform() {
         if (m_platform == "auto") {
             if (bin::pe::isPE64(m_binaryData)) {
@@ -67,7 +90,7 @@ namespace genpat {
         return Ok();
     }
 
-    Result<> Generator::generate() {
+    Result<> Generator::prepare() {
         GEODE_UNWRAP(this->readBinaryFile());
         if (m_verbose) {
             fmt::println("Read binary file: {} ({} bytes)", m_binaryFile, m_binaryData.size());
@@ -111,6 +134,10 @@ namespace genpat {
             );
         }
 
+        return Ok();
+    }
+
+    Result<> Generator::generate() {
         GEODE_UNWRAP_INTO(auto bindings, bromascan::readCodegenData(m_inputFile));
         if (m_verbose) {
             fmt::println("Read Broma codegen data: {} classes", bindings.size());
@@ -131,6 +158,28 @@ namespace genpat {
             }
         };
 
+        auto vtableSlots = this->computeVtableSlots(bindings);
+
+        std::unordered_map<uintptr_t, std::string> addrToName;
+        if (m_callGraph.size()) {
+            for (auto const& cls : bindings) {
+                for (auto const& method : cls.methods) {
+                    auto address = getBinding(method, m_platformType);
+                    if (address.type != bromascan::AddressType::Offset) continue;
+                    addrToName.emplace(address.offset, makeQualifiedName(cls.name, method.name));
+                }
+            }
+        }
+
+        bromascan::FunctionList const* funcListPtr = m_functionList.get();
+        std::unordered_map<uintptr_t, std::vector<uintptr_t>> const& callGraph = m_callGraph;
+        std::unordered_map<uintptr_t, VtableSlotInfo> const& vtableSlotsRef = vtableSlots;
+        std::unordered_map<uintptr_t, std::string> const& addrToNameRef = addrToName;
+
+        bool const isArm = (m_platformType == Platform::M1 || m_platformType == Platform::IOS);
+        uintptr_t const altOffset = isArm ? 4 : 5;
+        size_t const altMaxSize = isArm ? 32 : 20;
+
         utils::ThreadPool pool{};
 
         for (auto& cls : bindings) {
@@ -142,8 +191,12 @@ namespace genpat {
                 }
             );
 
-            pool.enqueue([this, cls = std::move(cls)]() mutable {
+            pool.enqueue([
+                this, cls = std::move(cls), altOffset, altMaxSize, funcListPtr,
+                &callGraph, &vtableSlotsRef, &addrToNameRef
+            ]() mutable {
                 std::vector<sinaps::token_t> outTokens;
+                std::vector<sinaps::token_t> altTokens;
                 ClassBinding classBinding;
                 classBinding.name = std::move(cls.name);
 
@@ -195,6 +248,44 @@ namespace genpat {
                         auto& methodBinding = classBinding.methods.emplace_back();
                         methodBinding.method = method;
                         methodBinding.pattern = sinaps::to_string(outTokens);
+
+                        altTokens.clear();
+                        auto altRes = (m_platformType == Platform::M1 || m_platformType == Platform::IOS)
+                            ? generatePattern<aarch64::Generator>(altTokens, m_targetSegment, correctedOffset + altOffset, altMaxSize)
+                            : generatePattern<amd64::Generator>(altTokens, m_targetSegment, correctedOffset + altOffset, altMaxSize);
+                        if (altRes) {
+                            methodBinding.altPattern = sinaps::to_string(altTokens);
+                            methodBinding.altPatternOffset = altOffset;
+                        }
+
+                        if (method.isVirtual) {
+                            auto it = vtableSlotsRef.find(address.offset);
+                            if (it != vtableSlotsRef.end()) {
+                                methodBinding.vtableName = it->second.vtableName;
+                                methodBinding.vtableSlot = it->second.slotIndex;
+                                methodBinding.vtableSlotCount = it->second.slotCount;
+                            }
+                        }
+
+                        if (funcListPtr) {
+                            if (auto* entry = funcListPtr->findAt(address.offset)) {
+                                if (entry->size != 0) {
+                                    methodBinding.funcSize = entry->size;
+                                }
+                            }
+                        }
+
+                        if (!callGraph.empty()) {
+                            auto it = callGraph.find(address.offset);
+                            if (it != callGraph.end()) {
+                                for (auto calleeRva : it->second) {
+                                    auto nit = addrToNameRef.find(calleeRva);
+                                    if (nit != addrToNameRef.end()) {
+                                        methodBinding.callTargets.push_back(nit->second);
+                                    }
+                                }
+                            }
+                        }
                     } else {
                         ++m_failedMethods;
                     }
