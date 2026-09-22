@@ -16,6 +16,7 @@ static std::unordered_map<std::string, size_t>& getUnkInstructionMap() {
     static std::once_flag flag;
     std::call_once(flag, [] {
         std::atexit([]() {
+            if (map->empty()) return;
             std::vector<std::pair<std::string, size_t>> sorted(map->begin(), map->end());
             std::ranges::sort(sorted, [](auto const& a, auto const& b) {
                 return b.second < a.second;
@@ -32,6 +33,33 @@ static std::unordered_map<std::string, size_t>& getUnkInstructionMap() {
 }
 
 namespace assembly::aarch64 {
+    struct CapstoneHandle {
+        csh handle = 0;
+        cs_insn* ins = nullptr;
+
+        CapstoneHandle() {
+            if (cs_open(CS_ARCH_AARCH64, CS_MODE_ARM, &handle) != CS_ERR_OK) {
+                fmt::println("Failed to initialize Capstone disassembler");
+                std::terminate();
+            }
+            cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
+            ins = cs_malloc(handle);
+        }
+
+        ~CapstoneHandle() {
+            cs_free(ins, 1);
+            cs_close(&handle);
+        }
+
+        CapstoneHandle(CapstoneHandle const&) = delete;
+        CapstoneHandle& operator=(CapstoneHandle const&) = delete;
+    };
+
+    static CapstoneHandle& threadHandle() {
+        thread_local CapstoneHandle h;
+        return h;
+    }
+
     bool Generator::Opcode::appendTokens(std::vector<sinaps::token_t>& outTokens) const {
         auto masked = this->getMasked();
         auto mask = this->m_mask;
@@ -46,27 +74,18 @@ namespace assembly::aarch64 {
     }
 
     Result<Generator::Opcode, GenerateError> Generator::readNextOpcode() {
-        static csh handle;
-        if (!handle) {
-            if (cs_open(CS_ARCH_AARCH64, CS_MODE_ARM, &handle) != CS_ERR_OK) {
-                fmt::println("Failed to initialize Capstone disassembler");
-                std::terminate();
-            }
-            cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
-            std::atexit([]() { cs_close(&handle); });
-        }
-
-        thread_local cs_insn* ins = cs_malloc(handle);
+        auto& h = threadHandle();
 
         auto code = m_data.data() + m_position;
         size_t codeSize = m_data.size() - m_position;
         uint64_t address = m_position;
 
-        if (!cs_disasm_iter(handle, &code, &codeSize, &address, ins)) {
-            fmt::println("Failed to disassemble instruction: {}", cs_strerror(cs_errno(handle)));
+        if (!cs_disasm_iter(h.handle, &code, &codeSize, &address, h.ins)) {
+            fmt::println("Failed to disassemble instruction: {}", cs_strerror(cs_errno(h.handle)));
             return Err(GenerateError::NotFound);
         }
 
+        auto* ins = h.ins;
         uint32_t mask = 0;
         cs_aarch64& detail = ins->detail->aarch64;
         switch (ins->is_alias ? ins->alias_id : ins->id) {
